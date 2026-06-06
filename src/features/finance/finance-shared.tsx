@@ -93,7 +93,7 @@ export function BillingPatientHeader({
   const patient = getPatientById(bill.patientId);
   if (!patient) return <EmptyState icon={UserRound} title="Patient not found" description="Static patient context is unavailable for this bill." />;
   return (
-    <Card className="sticky top-[132px] z-20">
+    <Card>
       <CardContent className="flex flex-col gap-3 p-3 xl:flex-row xl:items-center xl:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border bg-surface-muted">

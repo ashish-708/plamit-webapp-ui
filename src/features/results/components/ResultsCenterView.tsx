@@ -2,25 +2,42 @@
 
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import {
+  getCoreRowModel,
+  getPaginationRowModel,
+  useReactTable,
+  type ColumnDef,
+  type PaginationState,
+  type Table,
+} from "@tanstack/react-table";
 import {
   AlertTriangle,
   Bell,
   CalendarDays,
+  ChevronLeft,
+  ChevronRight,
   ChevronDown,
   CheckCircle2,
   ClipboardCheck,
   Clock3,
-  FlaskConical,
+  ChevronsLeft,
+  ChevronsRight,
   Download,
+  Eye,
+  FlaskConical,
   FileCheck2,
   FileText,
   Layers3,
   Image as ImageIcon,
+  MoreVertical,
   Printer,
   RefreshCcw,
   Search,
   ScanSearch,
   ShieldCheck,
+  X,
   Zap,
 } from "lucide-react";
 
@@ -29,15 +46,18 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { ResultDownloadDialog } from "@/features/results/components/ResultDownloadDialog";
+import { ResultsGroupDownloadDialog } from "@/features/results/components/ResultsGroupDownloadDialog";
 import { resultDepartments, resultRecords, resultStatuses } from "@/features/results/data/mockResults";
 import type { ResultDepartment, ResultRecord, ResultStatus } from "@/features/results/types";
 
 type DepartmentFilter = ResultDepartment | "all";
 type StatusFilter = ResultStatus | "all";
-type DateFilter = "all" | "today" | "yesterday";
+type DateFilter = "all" | "today" | "yesterday" | "custom";
 type AvailabilityFilter = "all" | "reports" | "images";
 type PreviewMode = "summary" | "report" | "image" | "audit";
 type QuickQueue = "pending" | "emergency" | null;
+type HistoryQuickView = "today" | "yesterday" | null;
 type FilterOption = {
   value: string;
   label: string;
@@ -54,6 +74,13 @@ const timeFormatter = new Intl.DateTimeFormat("en-IN", {
   hour: "2-digit",
   minute: "2-digit",
 });
+
+const monthFormatter = new Intl.DateTimeFormat("en-IN", {
+  month: "long",
+  year: "numeric",
+});
+
+const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const statusTone: Record<ResultStatus, "success" | "warning" | "info" | "critical"> = {
   "Sample Collected": "info",
@@ -78,22 +105,42 @@ function formatDateTime(value?: string) {
   return `${dateFormatter.format(date)}, ${timeFormatter.format(date)}`;
 }
 
-function isToday(value: string) {
-  const date = new Date(value);
-  const now = new Date();
-  return date.toDateString() === now.toDateString();
+function getDateKey(value: string) {
+  return new Date(value).toISOString().slice(0, 10);
 }
 
-function isYesterday(value: string) {
-  const date = new Date(value);
-  const now = new Date();
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  return date.toDateString() === yesterday.toDateString();
+function getLocalDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function isValidDateKey(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const date = new Date(`${value}T00:00:00`);
+  return !Number.isNaN(date.getTime()) && getLocalDateKey(date) === value;
+}
+
+function shiftDateKey(dateKey: string, offsetDays: number) {
+  const date = new Date(`${dateKey}T00:00:00`);
+  date.setDate(date.getDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+}
+
+function formatDateKeyLabel(dateKey: string) {
+  return dateFormatter.format(new Date(`${dateKey}T00:00:00`));
 }
 
 function getDepartmentLabel(department: DepartmentFilter) {
   return resultDepartments.find((item) => item.id === department)?.label ?? "All Results";
+}
+
+function getStatusLabel(status: StatusFilter) {
+  return status === "all" ? "All statuses" : status;
 }
 
 function getNextLaboratoryStatus(status: ResultStatus) {
@@ -175,19 +222,22 @@ function getViewCopy(initialDepartment: DepartmentFilter, criticalOnly: boolean)
 
 export function ResultsCenterView({
   initialDepartment = "all",
+  defaultDepartment = initialDepartment,
   criticalOnly = false,
   viewTitle,
   viewDescription,
 }: {
   initialDepartment?: DepartmentFilter;
+  defaultDepartment?: DepartmentFilter;
   criticalOnly?: boolean;
   viewTitle?: string;
   viewDescription?: string;
 }) {
   const isDepartmentLocked = initialDepartment !== "all";
-  const [department, setDepartment] = useState<DepartmentFilter>(initialDepartment);
+  const [department, setDepartment] = useState<DepartmentFilter>(defaultDepartment);
   const [status, setStatus] = useState<StatusFilter>(criticalOnly ? "Critical" : "all");
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
+  const [customResultDate, setCustomResultDate] = useState("");
   const [availability, setAvailability] = useState<AvailabilityFilter>("all");
   const [quickQueue, setQuickQueue] = useState<QuickQueue>(null);
   const [query, setQuery] = useState("");
@@ -199,6 +249,15 @@ export function ResultsCenterView({
   const [acknowledgedIds, setAcknowledgedIds] = useState<string[]>([]);
   const [ackNote, setAckNote] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  const [downloadGroup, setDownloadGroup] = useState<{ title: string; results: ResultRecord[] } | null>(null);
+  const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(false);
+  const [historyQuickView, setHistoryQuickView] = useState<HistoryQuickView>(null);
+  const [isCustomDateDialogOpen, setIsCustomDateDialogOpen] = useState(false);
+  const [customDateDialogVersion, setCustomDateDialogVersion] = useState(0);
+  const [isDateWiseHistoryOpen, setIsDateWiseHistoryOpen] = useState(false);
+  const [dateWiseHistoryDate, setDateWiseHistoryDate] = useState("");
+  const [historyPagination, setHistoryPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 4 });
+  const [dateWisePagination, setDateWisePagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 5 });
 
   const viewCopy = getViewCopy(initialDepartment, criticalOnly);
   const isLaboratoryView = initialDepartment === "laboratory";
@@ -233,13 +292,25 @@ export function ResultsCenterView({
     });
   }, [criticalOnly, initialDepartment, recordsWithState]);
 
+  const latestResultDateKey = useMemo(() => {
+    return scopedRecords
+      .map((result) => getDateKey(result.orderedAt))
+      .sort((first, second) => second.localeCompare(first))[0] ?? null;
+  }, [scopedRecords]);
+
+  const previousResultDateKey = latestResultDateKey ? shiftDateKey(latestResultDateKey, -1) : null;
+
   const filteredResults = useMemo(() => {
     const search = query.trim().toLowerCase();
 
     return recordsWithState.filter((result) => {
       const matchesDepartment = department === "all" || result.department === department;
       const matchesStatus = status === "all" || result.status === status;
-      const matchesDate = dateFilter === "all" || (dateFilter === "today" ? isToday(result.orderedAt) : isYesterday(result.orderedAt));
+      const matchesDate =
+        dateFilter === "all" ||
+        (dateFilter === "today" && getDateKey(result.orderedAt) === latestResultDateKey) ||
+        (dateFilter === "yesterday" && getDateKey(result.orderedAt) === previousResultDateKey) ||
+        (dateFilter === "custom" && (!customResultDate || getDateKey(result.orderedAt) === customResultDate));
       const matchesAvailability = availability === "all" || (availability === "reports" ? result.reportAvailable : result.imageAvailable);
       const matchesQuickQueue =
         quickQueue === null ||
@@ -255,19 +326,162 @@ export function ResultsCenterView({
 
       return matchesDepartment && matchesStatus && matchesDate && matchesAvailability && matchesQuickQueue && matchesLockedDepartment && matchesCriticalMode && matchesSearch;
     });
-  }, [availability, criticalOnly, dateFilter, department, initialDepartment, isDepartmentLocked, query, quickQueue, recordsWithState, status]);
+  }, [availability, criticalOnly, customResultDate, dateFilter, department, initialDepartment, isDepartmentLocked, latestResultDateKey, previousResultDateKey, query, quickQueue, recordsWithState, status]);
 
   const selectedResult = useMemo(() => {
     return filteredResults.find((result) => result.id === selectedId) ?? filteredResults[0] ?? null;
   }, [filteredResults, selectedId]);
 
-  const groupedResults = useMemo(() => {
-    return filteredResults.reduce<Record<string, ResultRecord[]>>((groups, result) => {
+  const shouldSplitResultHistory =
+    isUnifiedView &&
+    department === "all" &&
+    status === "all" &&
+    dateFilter === "all" &&
+    availability === "all" &&
+    quickQueue === null &&
+    query.trim().length === 0;
+
+  const activeQueueDateKey = useMemo(() => {
+    if (!shouldSplitResultHistory || filteredResults.length === 0) {
+      return null;
+    }
+
+    return filteredResults
+      .map((result) => getDateKey(result.orderedAt))
+      .sort((first, second) => second.localeCompare(first))[0];
+  }, [filteredResults, shouldSplitResultHistory]);
+
+  const sameDateResults = useMemo(() => {
+    if (!activeQueueDateKey) {
+      return filteredResults;
+    }
+
+    return filteredResults.filter((result) => getDateKey(result.orderedAt) === activeQueueDateKey);
+  }, [activeQueueDateKey, filteredResults]);
+
+  const historyResults = useMemo(() => {
+    if (!activeQueueDateKey) {
+      return [];
+    }
+
+    return filteredResults.filter((result) => getDateKey(result.orderedAt) !== activeQueueDateKey);
+  }, [activeQueueDateKey, filteredResults]);
+
+  const previousQueueDateKey = activeQueueDateKey ? shiftDateKey(activeQueueDateKey, -1) : null;
+
+  const todayHistoryResults = sameDateResults;
+
+  const yesterdayHistoryResults = useMemo(() => {
+    if (!previousQueueDateKey) {
+      return [];
+    }
+
+    return filteredResults.filter((result) => getDateKey(result.orderedAt) === previousQueueDateKey);
+  }, [filteredResults, previousQueueDateKey]);
+
+  const historyPanelResults = useMemo(() => {
+    if (historyQuickView === "today") {
+      return todayHistoryResults;
+    }
+
+    if (historyQuickView === "yesterday") {
+      return yesterdayHistoryResults;
+    }
+
+    return historyResults;
+  }, [historyQuickView, historyResults, todayHistoryResults, yesterdayHistoryResults]);
+
+  const historyPanelCopy = useMemo(() => {
+    if (historyQuickView === "today") {
+      return {
+        title: "Today History",
+        description: activeQueueDateKey ? `Showing queue history for ${formatDateKeyLabel(activeQueueDateKey)}.` : "Showing the latest available result date.",
+      };
+    }
+
+    if (historyQuickView === "yesterday") {
+      return {
+        title: "Yesterday History",
+        description: previousQueueDateKey ? `Showing queue history for ${formatDateKeyLabel(previousQueueDateKey)}.` : "Showing the previous available result date.",
+      };
+    }
+
+    return {
+      title: "Test History",
+      description: "Older results are separated from the live same-date queue.",
+    };
+  }, [activeQueueDateKey, historyQuickView, previousQueueDateKey]);
+
+  const availableHistoryDates = useMemo(() => {
+    const counts = filteredResults.reduce<Record<string, number>>((items, result) => {
+      const dateKey = getDateKey(result.orderedAt);
+      items[dateKey] = (items[dateKey] ?? 0) + 1;
+      return items;
+    }, {});
+
+    return Object.entries(counts)
+      .sort(([first], [second]) => second.localeCompare(first))
+      .map(([dateKey, count]) => ({
+        count,
+        dateKey,
+        label: formatDateKeyLabel(dateKey),
+      }));
+  }, [filteredResults]);
+
+  const availableResultDates = useMemo(() => {
+    const counts = recordsWithState.reduce<Record<string, number>>((items, result) => {
+      const dateKey = getDateKey(result.orderedAt);
+      items[dateKey] = (items[dateKey] ?? 0) + 1;
+      return items;
+    }, {});
+
+    return Object.entries(counts)
+      .sort(([first], [second]) => second.localeCompare(first))
+      .map(([dateKey, count]) => ({
+        count,
+        dateKey,
+        label: formatDateKeyLabel(dateKey),
+      }));
+  }, [recordsWithState]);
+
+  const dateWiseHistoryResults = useMemo(() => {
+    if (!dateWiseHistoryDate) {
+      return filteredResults;
+    }
+
+    return filteredResults.filter((result) => getDateKey(result.orderedAt) === dateWiseHistoryDate);
+  }, [dateWiseHistoryDate, filteredResults]);
+
+  const visibleGroupedResults = useMemo(() => {
+    return sameDateResults.reduce<Record<string, ResultRecord[]>>((groups, result) => {
       const label = dateFormatter.format(new Date(result.orderedAt));
       groups[label] = [...(groups[label] ?? []), result];
       return groups;
     }, {});
-  }, [filteredResults]);
+  }, [sameDateResults]);
+
+  const historyColumns = useMemo<ColumnDef<ResultRecord>[]>(() => [{ id: "history", accessorKey: "id" }], []);
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table is used here only for the separated test-history pagination state.
+  const historyTable = useReactTable({
+    data: historyPanelResults,
+    columns: historyColumns,
+    state: { pagination: historyPagination },
+    onPaginationChange: setHistoryPagination,
+    autoResetPageIndex: true,
+    getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+  });
+
+  const dateWiseColumns = useMemo<ColumnDef<ResultRecord>[]>(() => [{ id: "date-wise-history", accessorKey: "id" }], []);
+  const dateWiseHistoryTable = useReactTable({
+    data: dateWiseHistoryResults,
+    columns: dateWiseColumns,
+    state: { pagination: dateWisePagination },
+    onPaginationChange: setDateWisePagination,
+    autoResetPageIndex: true,
+    getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+  });
 
   const stats = useMemo(
     () => ({
@@ -307,8 +521,9 @@ export function ResultsCenterView({
 
   const dateOptions: FilterOption[] = [
     { value: "all", label: "All dates", meta: "Full history" },
-    { value: "today", label: "Today", meta: "Current day" },
-    { value: "yesterday", label: "Yesterday", meta: "Previous day" },
+    { value: "today", label: "Today", meta: latestResultDateKey ? formatDateKeyLabel(latestResultDateKey) : "Latest date" },
+    { value: "yesterday", label: "Yesterday", meta: previousResultDateKey ? formatDateKeyLabel(previousResultDateKey) : "Previous date" },
+    { value: "custom", label: "Custom date", meta: isValidDateKey(customResultDate) ? formatDateKeyLabel(customResultDate) : "Choose date" },
   ];
 
   const availabilityOptions: FilterOption[] = [
@@ -328,12 +543,14 @@ export function ResultsCenterView({
       images: recordsWithState.filter((result) => result.imageAvailable).length,
       pending: recordsWithState.filter((result) => result.status === "Sample Collected" || result.status === "Processing" || result.status === "Verification Pending").length,
       processing: recordsWithState.filter((result) => result.status === "Processing").length,
-      today: recordsWithState.filter((result) => isToday(result.orderedAt)).length,
+      today: recordsWithState.filter((result) => getDateKey(result.orderedAt) === latestResultDateKey).length,
       verification: recordsWithState.filter((result) => result.status === "Verification Pending").length,
       emergency: recordsWithState.filter((result) => result.priority === "Emergency" || result.status === "Critical").length,
     }),
-    [recordsWithState],
+    [latestResultDateKey, recordsWithState],
   );
+
+  const generatedReportRecords = useMemo(() => scopedRecords.filter((result) => result.reportAvailable), [scopedRecords]);
 
   const nextWorkItems = useMemo(() => {
     return [...recordsWithState]
@@ -367,10 +584,71 @@ export function ResultsCenterView({
     setOpenFilter(null);
   }
 
+  function openReportGroupDownload(results: ResultRecord[], label: string) {
+    if (results.length === 0) {
+      setNotice(`No ${label.toLowerCase()} reports available for download.`);
+      return;
+    }
+
+    setDownloadGroup({ title: `${label} Reports`, results });
+  }
+
+  function viewGeneratedReports() {
+    setDepartment("all");
+    setStatus("all");
+    setDateFilter("all");
+    setCustomResultDate("");
+    setAvailability("reports");
+    setQuickQueue(null);
+    setQuery("");
+    setPreviewMode("report");
+    setOpenFilter(null);
+    setNotice("Generated reports view applied.");
+  }
+
+  function openQuickHistory(view: HistoryQuickView) {
+    setHistoryQuickView(view);
+    setIsHistoryPanelOpen(true);
+    setHistoryPagination((current) => ({ ...current, pageIndex: 0 }));
+  }
+
+  function changeDateWiseHistoryDate(nextDate: string) {
+    setDateWiseHistoryDate(nextDate);
+    setDateWisePagination((current) => ({ ...current, pageIndex: 0 }));
+  }
+
+  function applyCustomResultDate(nextDate: string) {
+    setDateFilter("custom");
+    setCustomResultDate(nextDate);
+    setQuickQueue(null);
+    setOpenFilter(null);
+    setIsCustomDateDialogOpen(false);
+  }
+
+  function clearCustomResultDate() {
+    setDateFilter("all");
+    setCustomResultDate("");
+    setQuickQueue(null);
+    setOpenFilter(null);
+    setIsCustomDateDialogOpen(false);
+  }
+
+  function openCustomDateDialog() {
+    setOpenFilter(null);
+    setCustomDateDialogVersion((current) => current + 1);
+    setIsCustomDateDialogOpen(true);
+  }
+
+  function openDateWiseHistory() {
+    changeDateWiseHistoryDate(dateWiseHistoryDate || activeQueueDateKey || availableHistoryDates[0]?.dateKey || "");
+    setIsDateWiseHistoryOpen(true);
+  }
+
   function clearFilters() {
-    setDepartment(initialDepartment);
+    setDepartment(defaultDepartment);
     setStatus(criticalOnly ? "Critical" : "all");
     setDateFilter("all");
+    setCustomResultDate("");
     setAvailability("all");
     setQuickQueue(null);
     setQuery("");
@@ -384,6 +662,7 @@ export function ResultsCenterView({
       setDepartment("all");
       setStatus("Critical");
       setDateFilter("all");
+      setCustomResultDate("");
       setAvailability("all");
       setQuickQueue(null);
       setNotice("Critical results filter applied.");
@@ -391,6 +670,7 @@ export function ResultsCenterView({
       setDepartment("all");
       setStatus("all");
       setDateFilter("all");
+      setCustomResultDate("");
       setAvailability("reports");
       setQuickQueue(null);
       setNotice("Reports ready filter applied.");
@@ -398,6 +678,7 @@ export function ResultsCenterView({
       setDepartment("all");
       setStatus("all");
       setDateFilter("all");
+      setCustomResultDate("");
       setAvailability("images");
       setQuickQueue(null);
       setNotice("Images ready filter applied.");
@@ -405,6 +686,7 @@ export function ResultsCenterView({
       setDepartment("all");
       setStatus("all");
       setDateFilter("today");
+      setCustomResultDate("");
       setAvailability("all");
       setQuickQueue(null);
       setNotice("Today's results filter applied.");
@@ -412,6 +694,7 @@ export function ResultsCenterView({
       setDepartment("all");
       setStatus("all");
       setDateFilter("all");
+      setCustomResultDate("");
       setAvailability("all");
       setQuickQueue("pending");
       setNotice("In-progress result queue applied.");
@@ -419,6 +702,7 @@ export function ResultsCenterView({
       setDepartment("all");
       setStatus("Verification Pending");
       setDateFilter("all");
+      setCustomResultDate("");
       setAvailability("all");
       setQuickQueue(null);
       setNotice("Verification pending filter applied.");
@@ -426,6 +710,7 @@ export function ResultsCenterView({
       setDepartment("all");
       setStatus("all");
       setDateFilter("all");
+      setCustomResultDate("");
       setAvailability("all");
       setQuickQueue("emergency");
       setQuery("");
@@ -434,6 +719,7 @@ export function ResultsCenterView({
       setDepartment(preset);
       setStatus("all");
       setDateFilter("all");
+      setCustomResultDate("");
       setAvailability("all");
       setQuickQueue(null);
       setNotice(preset === "all" ? "All results view applied." : `${getDepartmentLabel(preset)} filter applied.`);
@@ -452,6 +738,7 @@ export function ResultsCenterView({
     setDepartment(result.status === "Critical" ? "all" : result.department);
     setStatus(result.status === "Critical" ? "Critical" : "all");
     setDateFilter("all");
+    setCustomResultDate("");
     setAvailability("all");
     setQuickQueue(null);
     setQuery("");
@@ -463,18 +750,6 @@ export function ResultsCenterView({
   function selectResult(result: ResultRecord) {
     setSelectedId(result.id);
     setPreviewMode("summary");
-  }
-
-  function downloadResult(result: ResultRecord) {
-    const payload = JSON.stringify(result, null, 2);
-    const blob = new Blob([payload], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${result.id}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    setNotice(`${result.id} downloaded as JSON.`);
   }
 
   function printResult(result: ResultRecord) {
@@ -534,6 +809,45 @@ export function ResultsCenterView({
         </div>
       ) : null}
 
+      {downloadGroup ? (
+        <ResultsGroupDownloadDialog
+          onDownloaded={(format) => setNotice(`${downloadGroup.results.length} reports downloaded as ${format}.`)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDownloadGroup(null);
+            }
+          }}
+          open={Boolean(downloadGroup)}
+          results={downloadGroup.results}
+          title={downloadGroup.title}
+        />
+      ) : null}
+
+      <CustomDateFilterDialog
+        availableDates={availableResultDates}
+        key={customDateDialogVersion}
+        onApply={applyCustomResultDate}
+        onClear={clearCustomResultDate}
+        onOpenChange={setIsCustomDateDialogOpen}
+        open={isCustomDateDialogOpen}
+        value={customResultDate}
+      />
+
+      <DateWiseHistoryDialog
+        availableDates={availableHistoryDates}
+        dateValue={dateWiseHistoryDate}
+        onDateChange={changeDateWiseHistoryDate}
+        onOpenChange={setIsDateWiseHistoryOpen}
+        onSelect={(result) => {
+          selectResult(result);
+          setIsDateWiseHistoryOpen(false);
+        }}
+        open={isDateWiseHistoryOpen}
+        selectedId={selectedResult?.id}
+        table={dateWiseHistoryTable}
+        totalCount={dateWiseHistoryResults.length}
+      />
+
       <Card className="overflow-hidden border-primary/15">
         <CardContent className="p-0">
           <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_420px]">
@@ -576,7 +890,7 @@ export function ResultsCenterView({
               <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 className="h-10 rounded-lg pl-10 text-sm"
-                placeholder="Search patient, MRN, order, test, doctor, accession, location"
+                placeholder="Search by patient, MRN, order, doctor"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
               />
@@ -604,16 +918,19 @@ export function ResultsCenterView({
                 setOpenFilter={setOpenFilter}
                 onChange={(value) => changeStatus(value as StatusFilter)}
               />
-              <FilterSelect
+              <DateRangeFilterSelect
                 className="xl:w-40"
                 id="date"
                 label="Date range"
                 value={dateFilter}
+                customDate={customResultDate}
                 options={dateOptions}
                 openFilter={openFilter}
                 setOpenFilter={setOpenFilter}
-                onChange={(value) => {
-                  setDateFilter(value as DateFilter);
+                onOpenCustomDate={openCustomDateDialog}
+                onChange={(value, nextCustomDate) => {
+                  setDateFilter(value);
+                  setCustomResultDate(nextCustomDate ?? "");
                   setQuickQueue(null);
                   setOpenFilter(null);
                 }}
@@ -653,10 +970,17 @@ export function ResultsCenterView({
           <div className="flex flex-wrap gap-2">
             {resultStatuses.map((item) => (
               <FilterChip active={status === item} disabled={criticalOnly && item !== "Critical"} key={item} onClick={() => changeStatus(item)}>
-                {item === "all" ? "All statuses" : item}
+                {getStatusLabel(item)}
                 <span className="ml-1 rounded-full bg-current/10 px-1.5 py-0.5 text-[10px]">{statusCounts[item] ?? 0}</span>
               </FilterChip>
             ))}
+            <StatusActionChip
+              active={availability === "reports"}
+              count={generatedReportRecords.length}
+              label="Generated Reports"
+              onDownload={() => openReportGroupDownload(generatedReportRecords, "Generated Reports")}
+              onView={viewGeneratedReports}
+            />
           </div>
         </CardContent>
       </Card>
@@ -666,9 +990,25 @@ export function ResultsCenterView({
           <CardHeader className="px-5 py-4">
             <div>
               <CardTitle className="text-base">{isDepartmentLocked ? getDepartmentLabel(initialDepartment) : getDepartmentLabel(department)}</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">{filteredResults.length} records match the current filters</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {shouldSplitResultHistory
+                  ? `${sameDateResults.length} same-date records shown. Use Test History for ${historyResults.length} older tests.`
+                  : `${filteredResults.length} records match the current filters`}
+              </p>
             </div>
-            <Badge tone={criticalOnly ? "critical" : "info"}>{criticalOnly ? "Critical only" : "Live results"}</Badge>
+            <div className="flex flex-wrap items-center gap-2">
+              {shouldSplitResultHistory && historyResults.length > 0 ? (
+                <ResultHistoryDropdown
+                  onDateWise={openDateWiseHistory}
+                  onToday={() => openQuickHistory("today")}
+                  onYesterday={() => openQuickHistory("yesterday")}
+                  todayCount={todayHistoryResults.length}
+                  totalCount={historyResults.length}
+                  yesterdayCount={yesterdayHistoryResults.length}
+                />
+              ) : null}
+              <Badge tone={criticalOnly ? "critical" : "info"}>{criticalOnly ? "Critical only" : "Live results"}</Badge>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4 p-4 md:p-5">
             {filteredResults.length === 0 ? (
@@ -680,73 +1020,53 @@ export function ResultsCenterView({
                 </Button>
               </div>
             ) : (
-              Object.entries(groupedResults).map(([date, records]) => (
-                <section className="space-y-3" key={date}>
-                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <CalendarDays className="h-3.5 w-3.5" />
-                    {date}
-                  </div>
-                  <div className="overflow-hidden rounded-xl border border-border">
-                    <div className="hidden grid-cols-[1.25fr_0.9fr_0.82fr_0.75fr_0.95fr] gap-3 border-b border-border bg-surface-muted px-4 py-3 text-xs font-semibold text-muted-foreground lg:grid">
-                      <span>Patient and test</span>
-                      <span>{isLaboratoryView ? "Specimen" : "Department"}</span>
-                      <span>Status</span>
-                      <span>Priority</span>
-                      <span className="text-right">{isLaboratoryView ? "Report" : "Availability"}</span>
+              <>
+                {Object.entries(visibleGroupedResults).map(([date, records]) => (
+                  <section className="space-y-3" key={date}>
+                    <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      <CalendarDays className="h-3.5 w-3.5" />
+                      {date}
                     </div>
-                    {records.map((result) => {
-                      const isSelected = selectedResult?.id === result.id;
-                      const isAcknowledged = acknowledgedIds.includes(result.id);
-
-                      return (
-                        <button
-                          className={cn(
-                            "grid w-full gap-3 border-b border-border px-4 py-4 text-left transition last:border-b-0 hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:grid-cols-[1.25fr_0.9fr_0.82fr_0.75fr_0.95fr] lg:items-center",
-                            isSelected && "bg-primary/5 ring-1 ring-inset ring-primary/25",
-                          )}
+                    <div className="overflow-hidden rounded-xl border border-border">
+                      <div className="hidden grid-cols-[1.25fr_0.9fr_0.82fr_0.75fr_0.95fr] gap-3 border-b border-border bg-surface-muted px-4 py-3 text-xs font-semibold text-muted-foreground lg:grid">
+                        <span>Patient and test</span>
+                        <span>{isLaboratoryView ? "Specimen" : "Department"}</span>
+                        <span>Status</span>
+                        <span>Priority</span>
+                        <span className="text-right">{isLaboratoryView ? "Report" : "Availability"}</span>
+                      </div>
+                      {records.map((result) => (
+                        <ResultQueueRow
+                          acknowledged={acknowledgedIds.includes(result.id)}
+                          isLaboratoryView={isLaboratoryView}
                           key={result.id}
-                          onClick={() => selectResult(result)}
-                          type="button"
-                        >
-                          <div className="min-w-0">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <span className="truncate text-base font-semibold text-foreground">{result.patientName}</span>
-                              {isAcknowledged ? <Badge tone="success">Acknowledged</Badge> : null}
-                            </div>
-                            <div className="mt-1 truncate text-sm text-muted-foreground">
-                              {result.mrn} | {result.testName}
-                            </div>
-                            <div className="mt-1 text-xs text-muted-foreground">{result.id}</div>
-                          </div>
-                          <div className="min-w-0 text-sm text-muted-foreground">
-                            <div className="font-medium capitalize text-foreground">{isLaboratoryView ? result.specimen ?? "Lab specimen" : result.department}</div>
-                            <div className="mt-1 truncate text-xs">{isLaboratoryView ? result.location : formatDateTime(result.orderedAt)}</div>
-                          </div>
-                          <div>
-                            <Badge tone={statusTone[result.status]}>{result.status}</Badge>
-                          </div>
-                          <div>
-                            <Badge tone={priorityTone[result.priority]}>{result.priority}</Badge>
-                          </div>
-                          <div className="flex justify-start gap-2 lg:justify-end">
-                            <AvailabilityIcon active={result.reportAvailable} label="Report" icon="report" />
-                            {!isLaboratoryView ? <AvailabilityIcon active={result.imageAvailable} label="Image" icon="image" /> : null}
-                            <span className="inline-flex h-9 min-w-9 items-center justify-center rounded-md border border-border bg-background px-3 text-xs font-medium text-muted-foreground">
-                              {isLaboratoryView ? (result.reportAvailable ? "Ready" : "Pending") : "View"}
-                            </span>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))
+                          onSelect={() => selectResult(result)}
+                          result={result}
+                          selected={selectedResult?.id === result.id}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                ))}
+
+                {shouldSplitResultHistory && historyResults.length > 0 && isHistoryPanelOpen ? (
+                  <TestHistoryPanel
+                    description={historyPanelCopy.description}
+                    historyTable={historyTable}
+                    onClose={() => setIsHistoryPanelOpen(false)}
+                    onSelect={selectResult}
+                    selectedId={selectedResult?.id}
+                    title={historyPanelCopy.title}
+                    totalCount={historyPanelResults.length}
+                  />
+                ) : null}
+              </>
             )}
           </CardContent>
         </Card>
 
         {selectedResult ? (
-          <Card className="min-w-0 xl:sticky xl:top-40 xl:self-start">
+          <Card className="min-w-0 xl:self-start">
             <CardHeader className="px-5 py-4">
               <div className="min-w-0">
                 <CardTitle className="truncate text-base">{selectedResult.patientName}</CardTitle>
@@ -820,16 +1140,88 @@ export function ResultsCenterView({
                   <Printer className="h-4 w-4" />
                   Print
                 </Button>
-                <Button variant="outline" onClick={() => downloadResult(selectedResult)}>
-                  <Download className="h-4 w-4" />
-                  Download
-                </Button>
+                <ResultDownloadDialog
+                  onDownloaded={(format) => setNotice(`${selectedResult.id} downloaded as ${format}.`)}
+                  result={selectedResult}
+                  trigger={
+                    <Button disabled={!selectedResult.reportAvailable} title={selectedResult.reportAvailable ? "Download report" : "Report is not ready"} type="button" variant="outline">
+                      <Download className="h-4 w-4" />
+                      Download
+                    </Button>
+                  }
+                />
               </div>
             </CardContent>
           </Card>
         ) : null}
       </div>
     </div>
+  );
+}
+
+function ResultHistoryDropdown({
+  onDateWise,
+  onToday,
+  onYesterday,
+  todayCount,
+  totalCount,
+  yesterdayCount,
+}: {
+  onDateWise: () => void;
+  onToday: () => void;
+  onYesterday: () => void;
+  todayCount: number;
+  totalCount: number;
+  yesterdayCount: number;
+}) {
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <Button size="sm" type="button" variant="outline">
+          Test History
+          <Badge tone="muted">{totalCount}</Badge>
+          <MoreVertical className="h-4 w-4 text-muted-foreground" />
+        </Button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          className="z-50 w-64 overflow-hidden rounded-lg border border-border bg-surface p-1 shadow-lg"
+          sideOffset={8}
+        >
+          <DropdownMenu.Item
+            className="flex cursor-pointer items-center justify-between gap-3 rounded-md px-3 py-2 text-sm outline-none transition focus:bg-surface-muted"
+            onSelect={onToday}
+          >
+            <span>
+              <span className="block font-medium text-foreground">Today</span>
+              <span className="block text-xs text-muted-foreground">Latest queue date</span>
+            </span>
+            <Badge tone="info">{todayCount}</Badge>
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            className="flex cursor-pointer items-center justify-between gap-3 rounded-md px-3 py-2 text-sm outline-none transition focus:bg-surface-muted"
+            onSelect={onYesterday}
+          >
+            <span>
+              <span className="block font-medium text-foreground">Yesterday</span>
+              <span className="block text-xs text-muted-foreground">Previous queue date</span>
+            </span>
+            <Badge tone="muted">{yesterdayCount}</Badge>
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            className="flex cursor-pointer items-center justify-between gap-3 rounded-md px-3 py-2 text-sm outline-none transition focus:bg-surface-muted"
+            onSelect={onDateWise}
+          >
+            <span>
+              <span className="block font-medium text-foreground">Older Tests</span>
+              <span className="block text-xs text-muted-foreground">Open custom history view</span>
+            </span>
+            <MoreVertical className="h-4 w-4 text-muted-foreground" />
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 
@@ -893,6 +1285,103 @@ function FilterSelect({
               {option.value === value ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : null}
             </button>
           ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DateRangeFilterSelect({
+  className,
+  customDate,
+  id,
+  label,
+  onChange,
+  onOpenCustomDate,
+  openFilter,
+  options,
+  setOpenFilter,
+  value,
+}: {
+  className?: string;
+  customDate: string;
+  id: string;
+  label: string;
+  onChange: (value: DateFilter, customDate?: string) => void;
+  onOpenCustomDate: () => void;
+  openFilter: string | null;
+  options: FilterOption[];
+  setOpenFilter: (id: string | null) => void;
+  value: DateFilter;
+}) {
+  const selected = options.find((option) => option.value === value) ?? options[0];
+  const normalOptions = options.filter((option) => option.value !== "custom");
+  const isOpen = openFilter === id;
+  const selectedLabel = value === "custom" && isValidDateKey(customDate) ? formatDateKeyLabel(customDate) : selected?.label;
+
+  return (
+    <div className={cn("relative min-w-0", className)}>
+      <button
+        type="button"
+        onClick={() => setOpenFilter(isOpen ? null : id)}
+        className={cn(
+          "flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-input bg-background px-3 text-left shadow-sm outline-none transition hover:bg-surface-muted focus:ring-2 focus:ring-ring/20",
+          isOpen && "border-ring ring-2 ring-ring/20",
+        )}
+      >
+        <span className="min-w-0">
+          <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</span>
+          <span className="block truncate text-xs font-semibold text-foreground">{selectedLabel}</span>
+        </span>
+        <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", isOpen && "rotate-180")} />
+      </button>
+
+      {isOpen ? (
+        <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 overflow-hidden rounded-lg border border-border bg-surface shadow-lg">
+          {normalOptions.map((option) => (
+            <button
+              type="button"
+              key={option.value}
+              onClick={() => onChange(option.value as DateFilter, "")}
+              className={cn(
+                "flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm transition hover:bg-surface-muted",
+                option.value === value && "bg-primary/10 text-primary",
+              )}
+            >
+              <span className="min-w-0">
+                <span className="block truncate font-medium">{option.label}</span>
+                {option.meta ? <span className="block text-xs text-muted-foreground">{option.meta}</span> : null}
+              </span>
+              {option.value === value ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : null}
+            </button>
+          ))}
+
+          <div className={cn("flex items-center gap-2 border-t border-border p-2", value === "custom" && "bg-primary/10")}>
+            <button
+              className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-md px-2 py-2 text-left text-sm transition hover:bg-surface-muted"
+              onClick={() => {
+                if (customDate) {
+                  onChange("custom", customDate);
+                } else {
+                  onOpenCustomDate();
+                }
+              }}
+              type="button"
+            >
+              <span className="min-w-0">
+                <span className="block truncate font-medium text-foreground">Custom date</span>
+              </span>
+              {value === "custom" ? <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" /> : null}
+            </button>
+            <button
+              aria-label="Open custom date calendar"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition hover:bg-surface-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={onOpenCustomDate}
+              type="button"
+            >
+              <MoreVertical className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       ) : null}
     </div>
@@ -1230,6 +1719,711 @@ function FilterChip({
     >
       {children}
     </button>
+  );
+}
+
+function ResultQueueRow({
+  acknowledged,
+  isLaboratoryView,
+  onSelect,
+  result,
+  selected,
+}: {
+  acknowledged: boolean;
+  isLaboratoryView: boolean;
+  onSelect: () => void;
+  result: ResultRecord;
+  selected: boolean;
+}) {
+  return (
+    <button
+      className={cn(
+        "grid w-full gap-3 border-b border-border px-4 py-4 text-left transition last:border-b-0 hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:grid-cols-[1.25fr_0.9fr_0.82fr_0.75fr_0.95fr] lg:items-center",
+        selected && "bg-primary/5 ring-1 ring-inset ring-primary/25",
+      )}
+      onClick={onSelect}
+      type="button"
+    >
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-base font-semibold text-foreground">{result.patientName}</span>
+          {acknowledged ? <Badge tone="success">Acknowledged</Badge> : null}
+        </div>
+        <div className="mt-1 truncate text-sm text-muted-foreground">
+          {result.mrn} | {result.testName}
+        </div>
+        <div className="mt-1 text-xs text-muted-foreground">{result.id}</div>
+      </div>
+      <div className="min-w-0 text-sm text-muted-foreground">
+        <div className="font-medium capitalize text-foreground">{isLaboratoryView ? result.specimen ?? "Lab specimen" : result.department}</div>
+        <div className="mt-1 truncate text-xs">{isLaboratoryView ? result.location : formatDateTime(result.orderedAt)}</div>
+      </div>
+      <div>
+        <Badge tone={statusTone[result.status]}>{result.status}</Badge>
+      </div>
+      <div>
+        <Badge tone={priorityTone[result.priority]}>{result.priority}</Badge>
+      </div>
+      <div className="flex justify-start gap-2 lg:justify-end">
+        <AvailabilityIcon active={result.reportAvailable} label="Report" icon="report" />
+        {!isLaboratoryView ? <AvailabilityIcon active={result.imageAvailable} label="Image" icon="image" /> : null}
+        <span className="inline-flex h-9 min-w-9 items-center justify-center rounded-md border border-border bg-background px-3 text-xs font-medium text-muted-foreground">
+          {isLaboratoryView ? (result.reportAvailable ? "Ready" : "Pending") : "View"}
+        </span>
+      </div>
+    </button>
+  );
+}
+
+function TestHistoryPanel({
+  description,
+  historyTable,
+  onClose,
+  onSelect,
+  selectedId,
+  title,
+  totalCount,
+}: {
+  description: string;
+  historyTable: Table<ResultRecord>;
+  onClose: () => void;
+  onSelect: (result: ResultRecord) => void;
+  selectedId?: string;
+  title: string;
+  totalCount: number;
+}) {
+  const currentPage = historyTable.getState().pagination.pageIndex + 1;
+  const pageSize = historyTable.getState().pagination.pageSize;
+  const pageCount = Math.max(historyTable.getPageCount(), 1);
+  const pageStart = totalCount === 0 ? 0 : historyTable.getState().pagination.pageIndex * pageSize + 1;
+  const pageEnd = totalCount === 0 ? 0 : Math.min(totalCount, pageStart + historyTable.getRowModel().rows.length - 1);
+
+  return (
+    <section className="rounded-xl border border-border bg-background p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="text-sm font-semibold text-foreground">{title}</div>
+          <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge tone="muted">{totalCount} older tests</Badge>
+          <Button onClick={onClose} size="sm" type="button" variant="outline">
+            Hide History
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-2">
+        {historyTable.getRowModel().rows.map((row) => {
+          const result = row.original;
+
+          return (
+            <button
+              className={cn(
+                "grid w-full gap-3 rounded-lg border border-border bg-surface px-3 py-3 text-left transition hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:grid-cols-[1fr_auto] md:items-center",
+                selectedId === result.id && "border-primary bg-primary/5 ring-1 ring-inset ring-primary/20",
+              )}
+              key={result.id}
+              onClick={() => onSelect(result)}
+              type="button"
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-semibold text-foreground">{result.patientName}</span>
+                <span className="mt-1 block truncate text-xs text-muted-foreground">
+                  {formatDateTime(result.orderedAt)} | {result.mrn} | {result.testName}
+                </span>
+              </span>
+              <span className="flex flex-wrap items-center gap-2 md:justify-end">
+                <Badge tone={statusTone[result.status]}>{result.status}</Badge>
+                <Badge tone={priorityTone[result.priority]}>{result.priority}</Badge>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-4 rounded-lg border border-border bg-surface-muted p-3">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-sm font-semibold text-primary">
+              {currentPage}
+            </span>
+            <div>
+              <div className="text-sm font-semibold text-foreground">
+                Showing {pageStart} to {pageEnd} of {totalCount} older tests
+              </div>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                Page {currentPage} of {pageCount} | Test History pagination
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
+              <span className="text-xs font-semibold text-muted-foreground">Rows per page</span>
+              <div className="flex items-center gap-1">
+                {[4, 8].map((size) => (
+                  <Button
+                    aria-label={`${size} rows per page`}
+                    key={size}
+                    onClick={() => {
+                      historyTable.setPageSize(size);
+                      historyTable.setPageIndex(0);
+                    }}
+                    size="sm"
+                    type="button"
+                    variant={pageSize === size ? "default" : "ghost"}
+                  >
+                    {size}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                aria-label="Go to first page"
+                disabled={!historyTable.getCanPreviousPage()}
+                onClick={() => historyTable.setPageIndex(0)}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <ChevronsLeft className="h-4 w-4" />
+                First Page
+              </Button>
+              <Button
+                aria-label="Go to previous page"
+                disabled={!historyTable.getCanPreviousPage()}
+                onClick={() => historyTable.previousPage()}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                Previous Page
+              </Button>
+              <Button
+                aria-label="Go to next page"
+                disabled={!historyTable.getCanNextPage()}
+                onClick={() => historyTable.nextPage()}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                Next Page
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              <Button
+                aria-label="Go to last page"
+                disabled={!historyTable.getCanNextPage()}
+                onClick={() => historyTable.setPageIndex(pageCount - 1)}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                Last Page
+                <ChevronsRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CustomDateFilterDialog({
+  availableDates,
+  onApply,
+  onClear,
+  onOpenChange,
+  open,
+  value,
+}: {
+  availableDates: { count: number; dateKey: string; label: string }[];
+  onApply: (dateKey: string) => void;
+  onClear: () => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  value: string;
+}) {
+  const fallbackDate = availableDates[0]?.dateKey ?? getLocalDateKey(new Date());
+  const [draftDate, setDraftDate] = useState(value || fallbackDate);
+  const [visibleMonth, setVisibleMonth] = useState(() => new Date(`${value || fallbackDate}T00:00:00`));
+
+  const dateCounts = useMemo(() => {
+    return availableDates.reduce<Record<string, number>>((counts, item) => {
+      counts[item.dateKey] = item.count;
+      return counts;
+    }, {});
+  }, [availableDates]);
+
+  const calendarCells = useMemo(() => {
+    const year = visibleMonth.getFullYear();
+    const month = visibleMonth.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const startOffset = firstDay.getDay();
+
+    return Array.from({ length: 42 }, (_, index) => {
+      const date = new Date(year, month, index - startOffset + 1);
+      const dateKey = getLocalDateKey(date);
+
+      return {
+        date,
+        dateKey,
+        day: date.getDate(),
+        inCurrentMonth: date.getMonth() === month,
+      };
+    });
+  }, [visibleMonth]);
+
+  const canApply = isValidDateKey(draftDate);
+  const selectedLabel = canApply ? formatDateKeyLabel(draftDate) : "Enter a valid date";
+  const todayKey = getLocalDateKey(new Date());
+
+  function changeManualDate(nextDate: string) {
+    setDraftDate(nextDate);
+    if (isValidDateKey(nextDate)) {
+      setVisibleMonth(new Date(`${nextDate}T00:00:00`));
+    }
+  }
+
+  function moveMonth(offset: number) {
+    setVisibleMonth((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
+  }
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-[80] bg-black/40 backdrop-blur-[2px]" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-[90] w-[min(88vw,340px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border border-border bg-surface shadow-2xl outline-none">
+          <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+            <div>
+              <Dialog.Title className="text-base font-semibold text-foreground">Select Custom Date</Dialog.Title>
+              <Dialog.Description className="mt-1 text-sm text-muted-foreground">
+                Use the calendar or type a date manually for date-wise results.
+              </Dialog.Description>
+            </div>
+            <Dialog.Close asChild>
+              <Button aria-label="Close custom date calendar" size="icon" type="button" variant="ghost">
+                <X className="h-4 w-4" />
+              </Button>
+            </Dialog.Close>
+          </div>
+
+          <div className="space-y-3 p-3">
+            <label className="block rounded-lg border border-border bg-background p-2.5">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Manual date</span>
+              <Input
+                className="mt-2 h-9"
+                inputMode="numeric"
+                onChange={(event) => changeManualDate(event.target.value)}
+                pattern="\d{4}-\d{2}-\d{2}"
+                placeholder="YYYY-MM-DD"
+                value={draftDate}
+              />
+              <span className={cn("mt-2 block text-xs", canApply ? "text-muted-foreground" : "text-critical")}>{selectedLabel}</span>
+            </label>
+
+            {availableDates.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {availableDates.slice(0, 4).map((item) => (
+                  <button
+                    className={cn(
+                      "rounded-full border px-3 py-1.5 text-xs font-medium transition hover:bg-surface-muted",
+                      draftDate === item.dateKey ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-muted-foreground",
+                    )}
+                    key={item.dateKey}
+                    onClick={() => changeManualDate(item.dateKey)}
+                    type="button"
+                  >
+                    {item.label} ({item.count})
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="rounded-xl border border-border bg-background p-2.5">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <Button aria-label="Previous month" onClick={() => moveMonth(-1)} size="icon" type="button" variant="outline">
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <div className="text-sm font-semibold text-foreground">{monthFormatter.format(visibleMonth)}</div>
+                <Button aria-label="Next month" onClick={() => moveMonth(1)} size="icon" type="button" variant="outline">
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+
+              <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                {weekdayLabels.map((day) => (
+                  <span className="py-0.5" key={day}>
+                    {day}
+                  </span>
+                ))}
+              </div>
+
+              <div className="mt-1 grid grid-cols-7 gap-1">
+                {calendarCells.map((cell) => {
+                  const isSelected = draftDate === cell.dateKey;
+                  const isToday = todayKey === cell.dateKey;
+                  const count = dateCounts[cell.dateKey] ?? 0;
+
+                  return (
+                    <button
+                      className={cn(
+                        "relative flex h-8 items-center justify-center rounded-md border text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        cell.inCurrentMonth ? "border-border bg-surface text-foreground hover:bg-surface-muted" : "border-transparent bg-transparent text-muted-foreground/45",
+                        isToday && "border-info/50 text-info",
+                        isSelected && "border-primary bg-primary text-primary-foreground hover:bg-primary",
+                      )}
+                      key={cell.dateKey}
+                      onClick={() => changeManualDate(cell.dateKey)}
+                      type="button"
+                    >
+                      {cell.day}
+                      {count > 0 ? (
+                        <span
+                          className={cn(
+                            "absolute bottom-1 h-1.5 w-1.5 rounded-full",
+                            isSelected ? "bg-primary-foreground" : "bg-primary",
+                          )}
+                        />
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2 border-t border-border bg-surface-muted px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <Button onClick={onClear} type="button" variant="outline">
+              Clear Date
+            </Button>
+            <div className="flex gap-2">
+              <Dialog.Close asChild>
+                <Button type="button" variant="outline">
+                  Cancel
+                </Button>
+              </Dialog.Close>
+              <Button disabled={!canApply} onClick={() => onApply(draftDate)} type="button">
+                Apply Date
+              </Button>
+            </div>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function DateWiseHistoryDialog({
+  availableDates,
+  dateValue,
+  onDateChange,
+  onOpenChange,
+  onSelect,
+  open,
+  selectedId,
+  table,
+  totalCount,
+}: {
+  availableDates: { count: number; dateKey: string; label: string }[];
+  dateValue: string;
+  onDateChange: (value: string) => void;
+  onOpenChange: (open: boolean) => void;
+  onSelect: (result: ResultRecord) => void;
+  open: boolean;
+  selectedId?: string;
+  table: Table<ResultRecord>;
+  totalCount: number;
+}) {
+  const currentPage = table.getState().pagination.pageIndex + 1;
+  const pageSize = table.getState().pagination.pageSize;
+  const pageCount = Math.max(table.getPageCount(), 1);
+  const pageStart = totalCount === 0 ? 0 : table.getState().pagination.pageIndex * pageSize + 1;
+  const pageEnd = totalCount === 0 ? 0 : Math.min(totalCount, pageStart + table.getRowModel().rows.length - 1);
+  const activeDateLabel = dateValue ? formatDateKeyLabel(dateValue) : "All dates";
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-[80] bg-black/45 backdrop-blur-[2px]" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-[90] flex max-h-[88vh] w-[min(94vw,1040px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl outline-none">
+          <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+            <div>
+              <Dialog.Title className="text-lg font-semibold text-foreground">All Tests History</Dialog.Title>
+              <Dialog.Description className="mt-1 text-sm text-muted-foreground">
+                Review detailed result history by selected date with paginated patient records.
+              </Dialog.Description>
+            </div>
+            <Dialog.Close asChild>
+              <Button aria-label="Close date wise history" size="icon" type="button" variant="ghost">
+                <X className="h-4 w-4" />
+              </Button>
+            </Dialog.Close>
+          </div>
+
+          <div className="space-y-4 overflow-y-auto p-5">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
+              <div className="rounded-lg border border-border bg-background p-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-foreground">Available dates</div>
+                    <div className="text-xs text-muted-foreground">Choose a date bucket or keep all history visible.</div>
+                  </div>
+                  <Badge tone="info">{activeDateLabel}</Badge>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    onClick={() => onDateChange("")}
+                    size="sm"
+                    type="button"
+                    variant={dateValue === "" ? "default" : "outline"}
+                  >
+                    All Dates
+                  </Button>
+                  {availableDates.map((item) => (
+                    <Button
+                      key={item.dateKey}
+                      onClick={() => onDateChange(item.dateKey)}
+                      size="sm"
+                      type="button"
+                      variant={dateValue === item.dateKey ? "default" : "outline"}
+                    >
+                      {item.label}
+                      <Badge tone={dateValue === item.dateKey ? "default" : "muted"}>{item.count}</Badge>
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <label className="rounded-lg border border-border bg-background p-3">
+                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Custom date</span>
+                <Input
+                  className="mt-2 h-10"
+                  onChange={(event) => onDateChange(event.target.value)}
+                  type="date"
+                  value={dateValue}
+                />
+              </label>
+            </div>
+
+            <div className="overflow-hidden rounded-xl border border-border bg-background">
+              <div className="hidden grid-cols-[1.15fr_0.8fr_1fr_0.72fr_0.72fr] gap-3 border-b border-border bg-surface-muted px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground lg:grid">
+                <span>Patient and Test</span>
+                <span>Department</span>
+                <span>Order Details</span>
+                <span>Status</span>
+                <span className="text-right">Availability</span>
+              </div>
+
+              {table.getRowModel().rows.length === 0 ? (
+                <div className="px-4 py-10 text-center">
+                  <div className="text-sm font-semibold text-foreground">No history found</div>
+                  <p className="mt-1 text-xs text-muted-foreground">Choose another date or clear the custom date filter.</p>
+                </div>
+              ) : (
+                table.getRowModel().rows.map((row) => {
+                  const result = row.original;
+
+                  return (
+                    <button
+                      className={cn(
+                        "grid w-full gap-3 border-b border-border px-4 py-4 text-left transition last:border-b-0 hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:grid-cols-[1.15fr_0.8fr_1fr_0.72fr_0.72fr] lg:items-center",
+                        selectedId === result.id && "bg-primary/5 ring-1 ring-inset ring-primary/25",
+                      )}
+                      key={`date-history-${result.id}`}
+                      onClick={() => onSelect(result)}
+                      type="button"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold text-foreground">{result.patientName}</span>
+                        <span className="mt-1 block truncate text-xs text-muted-foreground">
+                          {result.mrn} | {result.ageSex} | {result.testName}
+                        </span>
+                        <span className="mt-1 block text-xs text-muted-foreground">{result.id}</span>
+                      </span>
+                      <span className="min-w-0 text-sm">
+                        <span className="block capitalize text-foreground">{result.department}</span>
+                        <span className="mt-1 block truncate text-xs text-muted-foreground">{result.location}</span>
+                      </span>
+                      <span className="min-w-0 text-sm text-muted-foreground">
+                        <span className="block truncate">{formatDateTime(result.orderedAt)}</span>
+                        <span className="mt-1 block truncate text-xs">{result.orderingDoctor}</span>
+                      </span>
+                      <span className="flex flex-wrap gap-2">
+                        <Badge tone={statusTone[result.status]}>{result.status}</Badge>
+                        <Badge tone={priorityTone[result.priority]}>{result.priority}</Badge>
+                      </span>
+                      <span className="flex justify-start gap-2 lg:justify-end">
+                        <AvailabilityIcon active={result.reportAvailable} label="Report" icon="report" />
+                        {result.department !== "laboratory" ? <AvailabilityIcon active={result.imageAvailable} label="Image" icon="image" /> : null}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          <div className="border-t border-border bg-surface-muted p-4">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div className="flex items-center gap-3">
+                <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-sm font-semibold text-primary">
+                  {currentPage}
+                </span>
+                <div>
+                  <div className="text-sm font-semibold text-foreground">
+                    Showing {pageStart} to {pageEnd} of {totalCount} records
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    Page {currentPage} of {pageCount} | Date wise history
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
+                  <span className="text-xs font-semibold text-muted-foreground">Rows per page</span>
+                  {[5, 10].map((size) => (
+                    <Button
+                      aria-label={`${size} rows per page`}
+                      key={size}
+                      onClick={() => {
+                        table.setPageSize(size);
+                        table.setPageIndex(0);
+                      }}
+                      size="sm"
+                      type="button"
+                      variant={pageSize === size ? "default" : "ghost"}
+                    >
+                      {size}
+                    </Button>
+                  ))}
+                </div>
+                <Button
+                  aria-label="Go to first date wise page"
+                  disabled={!table.getCanPreviousPage()}
+                  onClick={() => table.setPageIndex(0)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <ChevronsLeft className="h-4 w-4" />
+                  First Page
+                </Button>
+                <Button
+                  aria-label="Go to previous date wise page"
+                  disabled={!table.getCanPreviousPage()}
+                  onClick={() => table.previousPage()}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  Previous Page
+                </Button>
+                <Button
+                  aria-label="Go to next date wise page"
+                  disabled={!table.getCanNextPage()}
+                  onClick={() => table.nextPage()}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Next Page
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+                <Button
+                  aria-label="Go to last date wise page"
+                  disabled={!table.getCanNextPage()}
+                  onClick={() => table.setPageIndex(pageCount - 1)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Last Page
+                  <ChevronsRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function StatusActionChip({
+  active,
+  count,
+  disabled,
+  label,
+  onDownload,
+  onView,
+}: {
+  active: boolean;
+  count: number;
+  disabled?: boolean;
+  label: string;
+  onDownload: () => void;
+  onView: () => void;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex overflow-hidden rounded-md border text-xs font-medium transition",
+        active ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-muted-foreground",
+        disabled && "opacity-45",
+      )}
+    >
+      <button
+        className="inline-flex items-center px-3 py-1.5 transition hover:bg-current/5 disabled:cursor-not-allowed"
+        disabled={disabled}
+        onClick={onView}
+        type="button"
+      >
+        {label}
+        <span className="ml-1 rounded-full bg-current/10 px-1.5 py-0.5 text-[10px]">{count}</span>
+      </button>
+
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger asChild>
+          <button
+            aria-label={`${label} actions`}
+            className="inline-flex w-8 items-center justify-center border-l border-current/10 transition hover:bg-current/10 disabled:cursor-not-allowed"
+            disabled={disabled}
+            type="button"
+          >
+            <MoreVertical className="h-3.5 w-3.5" />
+          </button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content
+            align="end"
+            className="z-[80] min-w-44 overflow-hidden rounded-lg border border-border bg-surface p-1 shadow-xl"
+            sideOffset={6}
+          >
+            <DropdownMenu.Item
+              className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-foreground outline-none hover:bg-surface-muted focus:bg-surface-muted"
+              onSelect={onView}
+            >
+              <Eye className="h-4 w-4 text-muted-foreground" />
+              View Reports
+            </DropdownMenu.Item>
+            <DropdownMenu.Item
+              className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-foreground outline-none hover:bg-surface-muted focus:bg-surface-muted"
+              onSelect={onDownload}
+            >
+              <Download className="h-4 w-4 text-muted-foreground" />
+              Download Reports
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
+    </span>
   );
 }
 

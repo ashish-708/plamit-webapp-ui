@@ -60,7 +60,7 @@ export function InpatientHeader({ admission }: { admission: AdmissionRecord }) {
   const isolation = mockInfectionIsolationFlags.find((flag) => flag.patientId === admission.patientId);
   if (!patient) return null;
   return (
-    <Card className="sticky top-[132px] z-20">
+    <Card>
       <CardContent className="flex flex-col gap-3 p-3 xl:flex-row xl:items-center xl:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           <div className="rounded-lg border border-border bg-surface-muted p-3"><UserRound className="h-5 w-5 text-muted-foreground" /></div>

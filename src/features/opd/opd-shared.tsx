@@ -79,7 +79,7 @@ export function ClinicalPatientHeader({
   const allergies = mockAllergies.filter((allergy) => allergy.patientId === patientId && allergy.status === "Active");
   if (!patient) return null;
   return (
-    <Card className="sticky top-[132px] z-20">
+    <Card>
       <CardContent className="flex flex-col gap-3 p-3 xl:flex-row xl:items-center xl:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">

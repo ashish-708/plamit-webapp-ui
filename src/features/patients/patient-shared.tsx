@@ -111,7 +111,7 @@ export function PatientHeader({
           </>
         }
       />
-      <Card className="sticky top-[132px] z-20">
+      <Card>
         <CardContent className="flex flex-col gap-3 p-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border bg-surface-muted">

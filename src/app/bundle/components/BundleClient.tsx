@@ -42,7 +42,7 @@ export function BundleClient() {
         </div>
 
         <div className="mt-4 grid min-h-[calc(100vh-150px)] grid-cols-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-          <aside className="min-w-0 rounded-lg border border-slate-200 bg-white p-3 shadow-sm lg:sticky lg:top-16 lg:max-h-[calc(100vh-5rem)] lg:overflow-y-auto">
+          <aside className="min-w-0 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
           <input
             className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-sky-700 focus:ring-2 focus:ring-sky-100"
             onChange={(event) => setQuery(event.target.value)}
@@ -104,7 +104,7 @@ export function BundleClient() {
             {selectedItem.preview}
           </div>
 
-          <div className="min-w-0 xl:sticky xl:top-16 xl:self-start">
+          <div className="min-w-0 xl:self-start">
             <BundleCodeBlock code={selectedItem.code} filePath={selectedItem.filePath} />
           </div>
           </section>
