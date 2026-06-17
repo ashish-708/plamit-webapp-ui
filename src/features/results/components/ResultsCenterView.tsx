@@ -431,13 +431,6 @@ export function ResultsCenterView({
     }, {});
   }, [scopedRecords]);
 
-  const departmentCounts = useMemo(() => {
-    return resultDepartments.reduce<Record<string, number>>((counts, item) => {
-      counts[item.id] = item.id === "all" ? scopedRecords.length : scopedRecords.filter((result) => result.department === item.id).length;
-      return counts;
-    }, {});
-  }, [scopedRecords]);
-
   const unifiedCounts = useMemo(
     () => ({
       all: recordsWithState.length,
@@ -457,16 +450,6 @@ export function ResultsCenterView({
   );
 
   const generatedReportRecords = useMemo(() => scopedRecords.filter((result) => result.reportAvailable), [scopedRecords]);
-
-  function changeDepartment(nextDepartment: DepartmentFilter) {
-    if (isDepartmentLocked) {
-      return;
-    }
-
-    setDepartment(nextDepartment);
-    setQuickQueue(null);
-    setPreviewMode("summary");
-  }
 
   function changeStatus(nextStatus: StatusFilter) {
     if (criticalOnly && nextStatus !== "Critical") {
@@ -661,6 +644,18 @@ export function ResultsCenterView({
     setNotice(`${result.id} report marked ready for release.`);
   }
 
+  const resultSearchControl = (
+    <label className="relative block min-w-[260px] flex-1">
+      <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        className="h-10 rounded-lg border-border bg-surface pl-9 text-sm shadow-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/10"
+        placeholder="Search by UHID, MRN, patient"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+      />
+    </label>
+  );
+
   return (
     <div className="space-y-5">
       {notice ? (
@@ -716,34 +711,14 @@ export function ResultsCenterView({
           availability={availability}
           counts={unifiedCounts}
           onPreset={applyUnifiedPreset}
+          searchControl={resultSearchControl}
           status={status}
         />
       ) : null}
 
       <Card className="overflow-visible">
         <CardContent className="space-y-4 p-4 md:p-5">
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="relative min-w-[260px] flex-1">
-              <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                className="h-10 rounded-lg pl-10 text-sm"
-                placeholder="Search by UHID, MRN, patient"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </label>
-          </div>
-
-          {!isDepartmentLocked ? (
-            <div className="flex flex-wrap gap-2">
-              {resultDepartments.map((item) => (
-                <FilterChip active={department === item.id} key={item.id} onClick={() => changeDepartment(item.id)}>
-                  {item.label}
-                  <span className="ml-1 rounded-full bg-current/10 px-1.5 py-0.5 text-[10px]">{departmentCounts[item.id] ?? 0}</span>
-                </FilterChip>
-              ))}
-            </div>
-          ) : null}
+          {!isUnifiedView ? <div className="flex flex-wrap items-center gap-3">{resultSearchControl}</div> : null}
 
           <div className="flex flex-wrap gap-2">
             {resultStatuses.map((item) => (
@@ -1008,6 +983,7 @@ function UnifiedWorkspacePanel({
   availability,
   counts,
   onPreset,
+  searchControl,
   status,
 }: {
   activeDepartment: DepartmentFilter;
@@ -1027,6 +1003,7 @@ function UnifiedWorkspacePanel({
     emergency: number;
   };
   onPreset: (preset: "all" | ResultDepartment | "critical" | "reports" | "images" | "today" | "pending" | "verification" | "emergency") => void;
+  searchControl?: ReactNode;
   status: StatusFilter;
 }) {
   return (
@@ -1039,6 +1016,17 @@ function UnifiedWorkspacePanel({
         <Badge tone="info">Command view</Badge>
       </CardHeader>
       <CardContent className="space-y-4 p-4 md:p-5">
+        {searchControl ? (
+          <div className="rounded-xl border border-border/80 bg-surface-muted/50 px-3 py-2.5">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+              <div className="min-w-0 flex-1">{searchControl}</div>
+              <div className="hidden shrink-0 rounded-full border border-border bg-background px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground lg:block">
+                Quick Search
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <WorkspaceTile
             active={activeDepartment === "all" && status === "all" && availability === "all"}
