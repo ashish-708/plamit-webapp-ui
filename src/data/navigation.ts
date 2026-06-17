@@ -75,7 +75,6 @@ export const navigationItems: NavigationItem[] = [
       { id: "results-laboratory", label: "Laboratory Results", route: "/results/laboratory", status: "ready" },
       { id: "results-radiology", label: "Radiology Results", route: "/results/radiology", status: "ready" },
       { id: "results-poct", label: "POCT Results", route: "/results/poct", status: "ready" },
-      { id: "results-critical", label: "Critical Results", route: "/results/critical", status: "ready" },
     ],
   },
   {
