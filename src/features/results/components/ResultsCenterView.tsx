@@ -20,6 +20,7 @@ import {
   ChevronRight,
   CheckCircle2,
   ClipboardCheck,
+  Clock3,
   ChevronsLeft,
   ChevronsRight,
   Download,
@@ -28,10 +29,12 @@ import {
   FileText,
   Layers3,
   Image as ImageIcon,
+  LayoutGrid,
   MoreVertical,
   Printer,
   Search,
   ScanSearch,
+  Settings,
   ShieldCheck,
   X,
   Zap,
@@ -134,6 +137,40 @@ function getStatusLabel(status: StatusFilter) {
   return status === "all" ? "All statuses" : status;
 }
 
+function getPatientInitials(patientName: string) {
+  return patientName
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
+}
+
+function getStatusIcon(status: StatusFilter) {
+  if (status === "all") {
+    return <LayoutGrid className="h-4 w-4 text-primary" />;
+  }
+
+  if (status === "Sample Collected") {
+    return <FlaskConical className="h-4 w-4 text-slate-500" />;
+  }
+
+  if (status === "Processing") {
+    return <Settings className="h-4 w-4 text-slate-500" />;
+  }
+
+  if (status === "Verification Pending") {
+    return <Clock3 className="h-4 w-4 text-slate-500" />;
+  }
+
+  if (status === "Completed") {
+    return <CheckCircle2 className="h-4 w-4 text-emerald-400" />;
+  }
+
+  return <ShieldCheck className="h-4 w-4 text-rose-500" />;
+}
+
 function getNextLaboratoryStatus(status: ResultStatus) {
   if (status === "Sample Collected") {
     return "Processing";
@@ -185,8 +222,10 @@ export function ResultsCenterView({
   const [availability, setAvailability] = useState<AvailabilityFilter>("all");
   const [quickQueue, setQuickQueue] = useState<QuickQueue>(null);
   const [query, setQuery] = useState("");
+  const [isCommandSearchFocused, setIsCommandSearchFocused] = useState(false);
   const [selectedId, setSelectedId] = useState(resultRecords[0]?.id ?? "");
   const [previewMode, setPreviewMode] = useState<PreviewMode>("summary");
+  const [isResultDetailsOpen, setIsResultDetailsOpen] = useState(false);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, ResultStatus>>({});
   const [reportReadyIds, setReportReadyIds] = useState<string[]>([]);
   const [acknowledgedIds, setAcknowledgedIds] = useState<string[]>([]);
@@ -431,6 +470,8 @@ export function ResultsCenterView({
     }, {});
   }, [scopedRecords]);
 
+  const visibleStatusFilters = useMemo(() => resultStatuses.filter((item) => item !== "Critical"), []);
+
   const unifiedCounts = useMemo(
     () => ({
       all: recordsWithState.length,
@@ -451,6 +492,42 @@ export function ResultsCenterView({
 
   const generatedReportRecords = useMemo(() => scopedRecords.filter((result) => result.reportAvailable), [scopedRecords]);
 
+  const commandSearchSuggestions = useMemo(() => {
+    const search = query.trim().toLowerCase();
+
+    if (!search || !/[a-z]/i.test(search)) {
+      return [];
+    }
+
+    const seenPatients = new Set<string>();
+
+    return recordsWithState
+      .filter((result) => result.patientName.toLowerCase().includes(search))
+      .sort((first, second) => {
+        const firstStarts = first.patientName.toLowerCase().startsWith(search);
+        const secondStarts = second.patientName.toLowerCase().startsWith(search);
+
+        if (firstStarts !== secondStarts) {
+          return firstStarts ? -1 : 1;
+        }
+
+        return first.patientName.localeCompare(second.patientName);
+      })
+      .filter((result) => {
+        const key = result.patientName.toLowerCase();
+
+        if (seenPatients.has(key)) {
+          return false;
+        }
+
+        seenPatients.add(key);
+        return true;
+      })
+      .slice(0, 6);
+  }, [query, recordsWithState]);
+
+  const showCommandSearchSuggestions = isCommandSearchFocused && commandSearchSuggestions.length > 0;
+
   function changeStatus(nextStatus: StatusFilter) {
     if (criticalOnly && nextStatus !== "Critical") {
       return;
@@ -459,6 +536,12 @@ export function ResultsCenterView({
     setStatus(nextStatus);
     setQuickQueue(null);
     setPreviewMode("summary");
+  }
+
+  function selectCommandSearchSuggestion(result: ResultRecord) {
+    setQuery(result.patientName);
+    selectResult(result);
+    setIsCommandSearchFocused(false);
   }
 
   function openReportGroupDownload(results: ResultRecord[], label: string) {
@@ -596,6 +679,7 @@ export function ResultsCenterView({
   function selectResult(result: ResultRecord) {
     setSelectedId(result.id);
     setPreviewMode("summary");
+    setIsResultDetailsOpen(true);
   }
 
   function printResult(result: ResultRecord) {
@@ -656,6 +740,50 @@ export function ResultsCenterView({
     </label>
   );
 
+  const commandSearchControl = (
+    <div className="relative block min-w-[260px] flex-1">
+      <label className="relative block">
+        <Search className="pointer-events-none absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-primary/70" />
+        <Input
+          className="h-10 rounded-xl border-border/80 bg-background pl-10 text-sm font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.7),0_1px_2px_rgba(15,23,42,0.04)] transition placeholder:text-muted-foreground/75 focus:border-primary/35 focus:ring-4 focus:ring-primary/10"
+          onBlur={() => setIsCommandSearchFocused(false)}
+          onChange={(event) => setQuery(event.target.value)}
+          onFocus={() => setIsCommandSearchFocused(true)}
+          placeholder="Search by UHID, MRN, patient"
+          value={query}
+        />
+      </label>
+
+      {showCommandSearchSuggestions ? (
+        <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-[70] overflow-hidden rounded-2xl border border-border/80 bg-background shadow-[0_18px_45px_rgba(79,70,229,0.16)]">
+          <div className="border-b border-border/70 px-4 py-2 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Patient suggestions</div>
+          <div className="max-h-72 overflow-y-auto p-1.5">
+            {commandSearchSuggestions.map((result) => (
+              <button
+                className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
+                key={`command-search-${result.id}`}
+                onClick={() => selectCommandSearchSuggestion(result)}
+                onMouseDown={(event) => event.preventDefault()}
+                type="button"
+              >
+                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-xs font-bold text-primary">
+                  {getPatientInitials(result.patientName)}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold text-foreground">{result.patientName}</span>
+                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                    {result.mrn} | {result.testName}
+                  </span>
+                </span>
+                <Badge tone={statusTone[result.status]}>{result.status}</Badge>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+
   return (
     <div className="space-y-5">
       {notice ? (
@@ -711,20 +839,32 @@ export function ResultsCenterView({
           availability={availability}
           counts={unifiedCounts}
           onPreset={applyUnifiedPreset}
-          searchControl={resultSearchControl}
           status={status}
         />
       ) : null}
 
-      <Card className="overflow-visible">
-        <CardContent className="space-y-4 p-4 md:p-5">
+      {isUnifiedView ? (
+        <div className="rounded-2xl border border-border/75 bg-background/90 p-2 shadow-[0_10px_26px_rgba(79,70,229,0.08)]">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+            <div className="min-w-0 flex-1">{commandSearchControl}</div>
+            <span className="inline-flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#5f6ff5] via-[#4f6df5] to-[#4038f2] px-5 text-xs font-bold uppercase tracking-wide text-white shadow-[0_8px_20px_rgba(79,70,229,0.28)] lg:w-auto">
+              <Zap className="h-3.5 w-3.5" />
+              Quick Search
+            </span>
+          </div>
+        </div>
+      ) : null}
+
+      <Card className="overflow-visible rounded-2xl border-[#e6e8f7] bg-white shadow-[0_12px_30px_rgba(79,70,229,0.08)]">
+        <CardContent className="space-y-2 p-2">
           {!isUnifiedView ? <div className="flex flex-wrap items-center gap-3">{resultSearchControl}</div> : null}
 
-          <div className="flex flex-wrap gap-2">
-            {resultStatuses.map((item) => (
-              <FilterChip active={status === item} disabled={criticalOnly && item !== "Critical"} key={item} onClick={() => changeStatus(item)}>
-                {getStatusLabel(item)}
-                <span className="ml-1 rounded-full bg-current/10 px-1.5 py-0.5 text-[10px]">{statusCounts[item] ?? 0}</span>
+          <div className="grid items-center gap-1.5 lg:grid-cols-[1.02fr_1.2fr_0.94fr_1.36fr_0.9fr_1.4fr]">
+            {visibleStatusFilters.map((item) => (
+              <FilterChip active={status === item} disabled={criticalOnly} key={item} onClick={() => changeStatus(item)}>
+                {getStatusIcon(item)}
+                <span className="min-w-0 truncate">{getStatusLabel(item)}</span>
+                <span className="ml-auto rounded-md bg-current/10 px-1.5 py-0.5 text-[11px] font-bold leading-none text-current">{statusCounts[item] ?? 0}</span>
               </FilterChip>
             ))}
             <StatusActionChip
@@ -738,7 +878,24 @@ export function ResultsCenterView({
         </CardContent>
       </Card>
 
-      <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(420px,0.9fr)]">
+      <ResultDetailsDialog
+        ackNote={ackNote}
+        acknowledged={selectedResult ? acknowledgedIds.includes(selectedResult.id) : false}
+        onAckNoteChange={setAckNote}
+        onAcknowledge={acknowledgeCritical}
+        onAdvanceLaboratory={advanceLaboratoryWorkflow}
+        onNotifyCritical={notifyCriticalTeam}
+        onOpenChange={setIsResultDetailsOpen}
+        onPrint={printResult}
+        onReleaseLaboratory={releaseLaboratoryReport}
+        onSetNotice={setNotice}
+        onSetPreviewMode={setPreviewMode}
+        open={Boolean(selectedResult && isResultDetailsOpen)}
+        previewMode={previewMode}
+        result={selectedResult}
+      />
+
+      <div className="grid min-w-0 gap-5">
         <Card className="min-w-0">
           <CardHeader className="px-5 py-4">
             <div>
@@ -818,95 +975,6 @@ export function ResultsCenterView({
           </CardContent>
         </Card>
 
-        {selectedResult ? (
-          <Card className="min-w-0 xl:self-start">
-            <CardHeader className="px-5 py-4">
-              <div className="min-w-0">
-                <CardTitle className="truncate text-base">{selectedResult.patientName}</CardTitle>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {selectedResult.mrn} | {selectedResult.ageSex} | {selectedResult.visitType}
-                </p>
-              </div>
-              <Badge tone={statusTone[selectedResult.status]}>{selectedResult.status}</Badge>
-            </CardHeader>
-            <CardContent className="space-y-4 p-4 md:p-5">
-              <div className="grid grid-cols-4 gap-2 rounded-lg bg-surface-muted p-1">
-                <PreviewTab active={previewMode === "summary"} onClick={() => setPreviewMode("summary")}>
-                  Summary
-                </PreviewTab>
-                <PreviewTab active={previewMode === "report"} onClick={() => setPreviewMode("report")}>
-                  Report
-                </PreviewTab>
-                <PreviewTab active={previewMode === "image"} onClick={() => setPreviewMode("image")}>
-                  Image
-                </PreviewTab>
-                <PreviewTab active={previewMode === "audit"} onClick={() => setPreviewMode("audit")}>
-                  Audit
-                </PreviewTab>
-              </div>
-
-              {previewMode === "summary" ? <SummaryPanel result={selectedResult} /> : null}
-              {previewMode === "report" ? <ReportPanel result={selectedResult} /> : null}
-              {previewMode === "image" ? <ImagePanel result={selectedResult} /> : null}
-              {previewMode === "audit" ? <AuditPanel acknowledged={acknowledgedIds.includes(selectedResult.id)} ackNote={ackNote} result={selectedResult} /> : null}
-
-              {selectedResult.department === "laboratory" ? (
-                <LaboratoryWorkflowActions result={selectedResult} onAdvance={() => advanceLaboratoryWorkflow(selectedResult)} onRelease={() => releaseLaboratoryReport(selectedResult)} />
-              ) : null}
-
-              {selectedResult.status === "Critical" ? (
-                <div className="space-y-3 rounded-lg border border-critical/30 bg-critical/10 p-3 text-critical">
-                  <div className="flex items-center gap-2 text-sm font-semibold">
-                    <AlertTriangle className="h-4 w-4" />
-                    Critical result action required
-                  </div>
-                  <p className="text-xs">Notify the clinical team and record acknowledgement before closing this alert.</p>
-                  <textarea
-                    className="min-h-20 w-full resize-none rounded-md border border-critical/30 bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-critical/20"
-                    placeholder="Acknowledgement note"
-                    value={ackNote}
-                    onChange={(event) => setAckNote(event.target.value)}
-                  />
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <Button variant="outline" onClick={() => notifyCriticalTeam(selectedResult)}>
-                      <Bell className="h-4 w-4" />
-                      Notify Team
-                    </Button>
-                    <Button onClick={() => acknowledgeCritical(selectedResult)} disabled={acknowledgedIds.includes(selectedResult.id)}>
-                      <ShieldCheck className="h-4 w-4" />
-                      {acknowledgedIds.includes(selectedResult.id) ? "Acknowledged" : "Acknowledge"}
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Button onClick={() => setPreviewMode("report")}>
-                  <FileText className="h-4 w-4" />
-                  View Report
-                </Button>
-                <Button variant="outline" onClick={() => setPreviewMode("image")}>
-                  <ImageIcon className="h-4 w-4" />
-                  View Image
-                </Button>
-                <Button variant="outline" onClick={() => printResult(selectedResult)}>
-                  <Printer className="h-4 w-4" />
-                  Print
-                </Button>
-                <ResultDownloadDialog
-                  onDownloaded={(format) => setNotice(`${selectedResult.id} downloaded as ${format}.`)}
-                  result={selectedResult}
-                  trigger={
-                    <Button disabled={!selectedResult.reportAvailable} title={selectedResult.reportAvailable ? "Download report" : "Report is not ready"} type="button" variant="outline">
-                      <Download className="h-4 w-4" />
-                      Download
-                    </Button>
-                  }
-                />
-              </div>
-            </CardContent>
-          </Card>
-        ) : null}
       </div>
     </div>
   );
@@ -983,7 +1051,6 @@ function UnifiedWorkspacePanel({
   availability,
   counts,
   onPreset,
-  searchControl,
   status,
 }: {
   activeDepartment: DepartmentFilter;
@@ -1003,7 +1070,6 @@ function UnifiedWorkspacePanel({
     emergency: number;
   };
   onPreset: (preset: "all" | ResultDepartment | "critical" | "reports" | "images" | "today" | "pending" | "verification" | "emergency") => void;
-  searchControl?: ReactNode;
   status: StatusFilter;
 }) {
   return (
@@ -1016,17 +1082,6 @@ function UnifiedWorkspacePanel({
         <Badge tone="info">Command view</Badge>
       </CardHeader>
       <CardContent className="space-y-4 p-4 md:p-5">
-        {searchControl ? (
-          <div className="rounded-xl border border-border/80 bg-surface-muted/50 px-3 py-2.5">
-            <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
-              <div className="min-w-0 flex-1">{searchControl}</div>
-              <div className="hidden shrink-0 rounded-full border border-border bg-background px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground lg:block">
-                Quick Search
-              </div>
-            </div>
-          </div>
-        ) : null}
-
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <WorkspaceTile
             active={activeDepartment === "all" && status === "all" && availability === "all"}
@@ -1119,8 +1174,8 @@ function FilterChip({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-45",
-        active ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-muted-foreground hover:bg-surface-muted",
+        "relative inline-flex h-10 w-full min-w-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-transparent bg-[#fbfbff] px-2.5 text-xs font-semibold text-[#4c5062] shadow-[0_6px_16px_rgba(40,45,90,0.045)] transition hover:bg-white hover:shadow-[0_8px_18px_rgba(79,70,229,0.075)] disabled:cursor-not-allowed disabled:opacity-45",
+        active && "bg-white text-primary shadow-[0_8px_18px_rgba(79,70,229,0.10)] after:absolute after:inset-x-0 after:-bottom-[8px] after:h-[2px] after:rounded-full after:bg-primary",
       )}
     >
       {children}
@@ -1146,26 +1201,27 @@ function StatusActionChip({
   return (
     <span
       className={cn(
-        "inline-flex overflow-hidden rounded-md border text-xs font-medium transition",
-        active ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-muted-foreground",
+        "relative inline-flex h-10 w-full min-w-0 overflow-visible rounded-xl border border-transparent bg-[#fbfbff] text-xs font-semibold text-[#4c5062] shadow-[0_6px_16px_rgba(40,45,90,0.045)] transition hover:bg-white hover:shadow-[0_8px_18px_rgba(79,70,229,0.075)]",
+        active && "bg-white text-primary shadow-[0_8px_18px_rgba(79,70,229,0.10)] after:absolute after:inset-x-0 after:-bottom-[8px] after:h-[2px] after:rounded-full after:bg-primary",
         disabled && "opacity-45",
       )}
     >
       <button
-        className="inline-flex items-center px-3 py-1.5 transition hover:bg-current/5 disabled:cursor-not-allowed"
+        className="inline-flex min-w-0 flex-1 items-center gap-1.5 px-2.5 transition hover:bg-current/5 disabled:cursor-not-allowed"
         disabled={disabled}
         onClick={onView}
         type="button"
       >
-        {label}
-        <span className="ml-1 rounded-full bg-current/10 px-1.5 py-0.5 text-[10px]">{count}</span>
+        <FileText className="h-4 w-4 shrink-0 text-slate-500" />
+        <span className="min-w-0 truncate">{label}</span>
+        <span className="ml-auto rounded-md bg-current/10 px-1.5 py-0.5 text-[11px] font-bold leading-none text-current">{count}</span>
       </button>
 
       <DropdownMenu.Root>
         <DropdownMenu.Trigger asChild>
           <button
             aria-label={`${label} actions`}
-            className="inline-flex w-8 items-center justify-center border-l border-current/10 transition hover:bg-current/10 disabled:cursor-not-allowed"
+            className="inline-flex w-7 items-center justify-center text-muted-foreground transition hover:bg-surface-muted hover:text-foreground disabled:cursor-not-allowed"
             disabled={disabled}
             type="button"
           >
@@ -1196,6 +1252,147 @@ function StatusActionChip({
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
     </span>
+  );
+}
+
+function ResultDetailsDialog({
+  ackNote,
+  acknowledged,
+  onAckNoteChange,
+  onAcknowledge,
+  onAdvanceLaboratory,
+  onNotifyCritical,
+  onOpenChange,
+  onPrint,
+  onReleaseLaboratory,
+  onSetNotice,
+  onSetPreviewMode,
+  open,
+  previewMode,
+  result,
+}: {
+  ackNote: string;
+  acknowledged: boolean;
+  onAckNoteChange: (value: string) => void;
+  onAcknowledge: (result: ResultRecord) => void;
+  onAdvanceLaboratory: (result: ResultRecord) => void;
+  onNotifyCritical: (result: ResultRecord) => void;
+  onOpenChange: (open: boolean) => void;
+  onPrint: (result: ResultRecord) => void;
+  onReleaseLaboratory: (result: ResultRecord) => void;
+  onSetNotice: (notice: string | null) => void;
+  onSetPreviewMode: (mode: PreviewMode) => void;
+  open: boolean;
+  previewMode: PreviewMode;
+  result: ResultRecord | null;
+}) {
+  if (!result) {
+    return null;
+  }
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-[80] bg-black/45 backdrop-blur-[2px]" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-[90] flex max-h-[90vh] w-[min(94vw,980px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl outline-none">
+          <div className="flex items-start justify-between gap-4 border-b border-border bg-background px-5 py-4">
+            <div className="min-w-0">
+              <Dialog.Title className="truncate text-lg font-semibold text-foreground">{result.patientName}</Dialog.Title>
+              <Dialog.Description className="mt-1 text-sm text-muted-foreground">
+                {result.mrn} | {result.ageSex} | {result.visitType} | {result.testName}
+              </Dialog.Description>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Badge tone={statusTone[result.status]}>{result.status}</Badge>
+              <Dialog.Close asChild>
+                <Button aria-label="Close result details" size="icon" type="button" variant="ghost">
+                  <X className="h-4 w-4" />
+                </Button>
+              </Dialog.Close>
+            </div>
+          </div>
+
+          <div className="space-y-4 overflow-y-auto p-4 md:p-5">
+            <div className="grid grid-cols-4 gap-2 rounded-lg bg-surface-muted p-1">
+              <PreviewTab active={previewMode === "summary"} onClick={() => onSetPreviewMode("summary")}>
+                Summary
+              </PreviewTab>
+              <PreviewTab active={previewMode === "report"} onClick={() => onSetPreviewMode("report")}>
+                Report
+              </PreviewTab>
+              <PreviewTab active={previewMode === "image"} onClick={() => onSetPreviewMode("image")}>
+                Image
+              </PreviewTab>
+              <PreviewTab active={previewMode === "audit"} onClick={() => onSetPreviewMode("audit")}>
+                Audit
+              </PreviewTab>
+            </div>
+
+            {previewMode === "summary" ? <SummaryPanel result={result} /> : null}
+            {previewMode === "report" ? <ReportPanel result={result} /> : null}
+            {previewMode === "image" ? <ImagePanel result={result} /> : null}
+            {previewMode === "audit" ? <AuditPanel acknowledged={acknowledged} ackNote={ackNote} result={result} /> : null}
+
+            {result.department === "laboratory" ? (
+              <LaboratoryWorkflowActions result={result} onAdvance={() => onAdvanceLaboratory(result)} onRelease={() => onReleaseLaboratory(result)} />
+            ) : null}
+
+            {result.status === "Critical" ? (
+              <div className="space-y-3 rounded-lg border border-critical/30 bg-critical/10 p-3 text-critical">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <AlertTriangle className="h-4 w-4" />
+                  Critical result action required
+                </div>
+                <p className="text-xs">Notify the clinical team and record acknowledgement before closing this alert.</p>
+                <textarea
+                  className="min-h-20 w-full resize-none rounded-md border border-critical/30 bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-critical/20"
+                  onChange={(event) => onAckNoteChange(event.target.value)}
+                  placeholder="Acknowledgement note"
+                  value={ackNote}
+                />
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Button variant="outline" onClick={() => onNotifyCritical(result)}>
+                    <Bell className="h-4 w-4" />
+                    Notify Team
+                  </Button>
+                  <Button onClick={() => onAcknowledge(result)} disabled={acknowledged}>
+                    <ShieldCheck className="h-4 w-4" />
+                    {acknowledged ? "Acknowledged" : "Acknowledge"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="border-t border-border bg-surface-muted px-4 py-3">
+            <div className="grid gap-2 sm:grid-cols-4">
+              <Button onClick={() => onSetPreviewMode("report")}>
+                <FileText className="h-4 w-4" />
+                View Report
+              </Button>
+              <Button variant="outline" onClick={() => onSetPreviewMode("image")}>
+                <ImageIcon className="h-4 w-4" />
+                View Image
+              </Button>
+              <Button variant="outline" onClick={() => onPrint(result)}>
+                <Printer className="h-4 w-4" />
+                Print
+              </Button>
+              <ResultDownloadDialog
+                onDownloaded={(format) => onSetNotice(`${result.id} downloaded as ${format}.`)}
+                result={result}
+                trigger={
+                  <Button disabled={!result.reportAvailable} title={result.reportAvailable ? "Download report" : "Report is not ready"} type="button" variant="outline">
+                    <Download className="h-4 w-4" />
+                    Download
+                  </Button>
+                }
+              />
+            </div>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
